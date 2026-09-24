@@ -64,11 +64,6 @@ namespace TitleEdit.Windows.Tabs
 
             ImGuiComponents.HelpMarker("Free Trial accounts are forced onto a single title in vanilla. Chronicle still uses the expansions your client actually has files for (ARR through Shadowbringers on trial).");
 
-            if (ImGui.Checkbox("Chat ping when the mapped title changes", ref cfg.NotifyMsqTitleChange))
-            {
-                cfg.Save();
-            }
-
             if (ImGui.Button("Rescan MSQ now"))
             {
                 tracker.RefreshFromClient("manual");
