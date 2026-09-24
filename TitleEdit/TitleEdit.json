@@ -1,5 +1,5 @@
 {
-    "Author": "attick, perchbird, Speedas & Chronicle fork",
+    "Author": "attick, perchbird, Speedas, RokasKil, YyLlBbYy",
     "Name": "Title Edit Chronicle",
     "Punchline": "The title screen that follows your story — even on Free Trial, without a relaunch.",
     "Description": "A Title Edit fork that tracks the currently logged-in character's Main Scenario and sets the matching vanilla title screen and idle movie for the next lobby.\n\nUnlike the 7.1 built-in option, this follows the character you just played (not the furthest on the account), works on Free Trial, and applies as soon as you log out — no client relaunch.\n\nAll original Title Edit features remain: custom title and character select presets, sharing, last-location recording, and mounts.",
