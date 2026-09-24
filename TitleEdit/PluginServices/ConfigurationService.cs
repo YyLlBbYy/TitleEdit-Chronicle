@@ -63,7 +63,6 @@ public class ConfigurationService
     public bool HideVanillaPresets = false;
     public bool ApplyMsqTitleImmediately = true;
     public bool BypassFreeTrialTitleLock = true;
-    public bool NotifyMsqTitleChange = true;
     public ulong LastLoggedContentId = 0;
     public string LastLoggedCharacterName = "";
     public DateTime LastMsqObservedAt = DateTime.MinValue;
