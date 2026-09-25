@@ -11,7 +11,6 @@ public class ConfigWindow : Window, IDisposable
 {
     private readonly ITab[] tabs =
     {
-        new MsqTab(),
         new DisplayTypeTab(),
         new SettingsTab(),
         new PresetTab(),
