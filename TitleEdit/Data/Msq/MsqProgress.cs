@@ -1,17 +1,8 @@
-using System;
 using TitleEdit.Data.Lobby;
 using TitleEdit.Data.Persistence;
 
 namespace TitleEdit.Data.Msq
 {
-    public readonly record struct MsqSnapshot(
-        ulong ContentId,
-        string CharacterName,
-        TitleScreenExpansion Expansion,
-        string GateQuest,
-        DateTime ObservedAt,
-        bool FreeTrialAccount);
-
     public static class MsqVanillaPresets
     {
         public static string PresetPath(TitleScreenExpansion expansion) => expansion switch
