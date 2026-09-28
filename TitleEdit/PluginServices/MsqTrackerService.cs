@@ -70,52 +70,101 @@ namespace TitleEdit.PluginServices
         /// </param>
         public void RefreshFromClient(string reason, bool requireLoggedIn = true)
         {
-            if (requireLoggedIn && !Services.ClientState.IsLoggedIn)
+            // Hard outer guard: never let an exception from this path take down the plugin
+            // or flood the log during travel transitions.
+            try
             {
-                return;
-            }
+                if (requireLoggedIn && !Services.ClientState.IsLoggedIn)
+                {
+                    return;
+                }
 
-            // Prefer live PlayerState; fall back to whatever we already knew this session
-            // so a logout that races IsLoggedIn still has a usable Content ID / name.
-            var contentId = Services.PlayerState.ContentId;
-            if (contentId != 0)
+                // Prefer live PlayerState; fall back to whatever we already knew this session
+                // so a logout that races IsLoggedIn still has a usable Content ID / name.
+                ulong contentId = 0;
+                string name = "";
+                try
+                {
+                    // Extra safety: PlayerState can be in a bad intermediate state during travel.
+                    if (Services.PlayerState != null)
+                    {
+                        contentId = Services.PlayerState.ContentId;
+                        name = Services.PlayerState.CharacterName ?? "";
+                    }
+                }
+                catch
+                {
+                    // Swallow – we will fall back to previously known values.
+                }
+
+                if (contentId != 0)
+                {
+                    CurrentContentId = contentId;
+                }
+
+                if (!string.IsNullOrEmpty(name))
+                {
+                    CurrentCharacterName = name;
+                }
+
+                if (CurrentContentId == 0)
+                {
+                    return;
+                }
+
+                // On pure logout during travel we often already have a good expansion for this
+                // ContentId. Prefer the cheap cached path over a full DetectExpansion that
+                // touches QuestManager while it is being torn down.
+                var cfg = Services.ConfigurationService;
+                var key = CurrentContentId.ToString("X");
+                if (!requireLoggedIn &&
+                    cfg.CharacterMsqExpansions.TryGetValue(key, out var cached) &&
+                    cached != TitleScreenExpansion.ARealmReborn)
+                {
+                    // Still update the "last logged" pointers so the next title screen is correct,
+                    // but skip the expensive / fragile quest scan.
+                    CurrentExpansion = ClampToAvailable(cached);
+                    Persist(reason, changed: false);
+                    return;
+                }
+
+                var (expansion, gate) = DetectExpansion();
+                var changed = expansion != CurrentExpansion || CurrentContentId != cfg.LastLoggedContentId;
+                CurrentExpansion = expansion;
+                CurrentGateQuest = gate;
+                Persist(reason, changed);
+            }
+            catch (Exception ex)
             {
-                CurrentContentId = contentId;
+                // Never let travel-time failures become a continuous error spam.
+                Services.Log.Warning(ex, $"[MsqTracker] RefreshFromClient(\"{reason}\") failed – ignoring (common during world/DC travel)");
             }
-
-            var name = Services.PlayerState.CharacterName;
-            if (!string.IsNullOrEmpty(name))
-            {
-                CurrentCharacterName = name;
-            }
-
-            if (CurrentContentId == 0)
-            {
-                return;
-            }
-
-            var (expansion, gate) = DetectExpansion();
-            var changed = expansion != CurrentExpansion || CurrentContentId != Services.ConfigurationService.LastLoggedContentId;
-            CurrentExpansion = expansion;
-            CurrentGateQuest = gate;
-            Persist(reason, changed);
         }
 
         private void Persist(string reason, bool changed)
         {
-            var cfg = Services.ConfigurationService;
-            var key = CurrentContentId.ToString("X");
-            cfg.LastLoggedContentId = CurrentContentId;
-            cfg.LastLoggedCharacterName = CurrentCharacterName;
-            cfg.CharacterMsqExpansions[key] = CurrentExpansion;
-            cfg.CharacterMsqGateQuests[key] = CurrentGateQuest;
-            cfg.LastMsqObservedAt = DateTime.UtcNow;
-            cfg.Save();
-            Services.Log.Info($"[MsqTracker] {reason}: {CurrentCharacterName} ({CurrentContentId:X}) → {CurrentExpansion} via {CurrentGateQuest}");
-
-            if (changed && cfg.ApplyMsqTitleImmediately && cfg.TitleDisplayTypeOption.Type == TitleDisplayType.MsqProgress)
+            try
             {
-                ApplyToLobbyIfOnTitle();
+                var cfg = Services.ConfigurationService;
+                var key = CurrentContentId.ToString("X");
+                cfg.LastLoggedContentId = CurrentContentId;
+                cfg.LastLoggedCharacterName = CurrentCharacterName;
+                cfg.CharacterMsqExpansions[key] = CurrentExpansion;
+                // Keep writing the two historically present fields for config compatibility
+                // even though nothing currently reads them back.
+                cfg.CharacterMsqGateQuests[key] = CurrentGateQuest;
+                cfg.LastMsqObservedAt = DateTime.UtcNow;
+                cfg.Save();
+                Services.Log.Info($"[MsqTracker] {reason}: {CurrentCharacterName} ({CurrentContentId:X}) → {CurrentExpansion} via {CurrentGateQuest}");
+
+                if (changed && cfg.ApplyMsqTitleImmediately && cfg.TitleDisplayTypeOption.Type == TitleDisplayType.MsqProgress)
+                {
+                    ApplyToLobbyIfOnTitle();
+                }
+            }
+            catch (Exception ex)
+            {
+                Services.Log.Warning(ex, $"[MsqTracker] Persist(\"{reason}\") failed");
             }
         }
 
@@ -136,26 +185,33 @@ namespace TitleEdit.PluginServices
 
         private (TitleScreenExpansion Expansion, string Gate) DetectExpansion()
         {
-            foreach (var (expansion, names) in MsqGateQuests.Gates)
+            try
             {
-                foreach (var name in names)
+                foreach (var (expansion, names) in MsqGateQuests.Gates)
                 {
-                    if (!gateQuestIds.TryGetValue(name, out var id) || id == 0)
+                    foreach (var name in names)
                     {
-                        continue;
-                    }
+                        if (!gateQuestIds.TryGetValue(name, out var id) || id == 0)
+                        {
+                            continue;
+                        }
 
-                    if (IsQuestReached(id))
-                    {
-                        return (expansion, name);
+                        if (IsQuestReached(id))
+                        {
+                            return (expansion, name);
+                        }
                     }
                 }
-            }
 
-            var scanned = ScanHighestMsqExpansion();
-            if (scanned != TitleScreenExpansion.ARealmReborn)
+                var scanned = ScanHighestMsqExpansion();
+                if (scanned != TitleScreenExpansion.ARealmReborn)
+                {
+                    return (scanned, $"MSQ sheet ({scanned})");
+                }
+            }
+            catch (Exception ex)
             {
-                return (scanned, $"MSQ sheet ({scanned})");
+                Services.Log.Warning(ex, "[MsqTracker] DetectExpansion failed – falling back to ARR");
             }
 
             return (TitleScreenExpansion.ARealmReborn, "A Realm Reborn");
@@ -231,19 +287,27 @@ namespace TitleEdit.PluginServices
                 return false;
             }
 
-            if (QuestManager.IsQuestComplete(questId))
+            try
             {
-                return true;
-            }
+                if (QuestManager.IsQuestComplete(questId))
+                {
+                    return true;
+                }
 
-            var qm = QuestManager.Instance();
-            if (qm == null)
+                var qm = QuestManager.Instance();
+                if (qm == null)
+                {
+                    return false;
+                }
+
+                var acceptedId = questId > 0xFFFF ? (ushort)(questId - 0x10000) : (ushort)questId;
+                return qm->IsQuestAccepted(acceptedId);
+            }
+            catch
             {
+                // QuestManager can be in an invalid state during logout / travel.
                 return false;
             }
-
-            var acceptedId = questId > 0xFFFF ? (ushort)(questId - 0x10000) : (ushort)questId;
-            return qm->IsQuestAccepted(acceptedId);
         }
 
         private TitleScreenExpansion ClampToAvailable(TitleScreenExpansion expansion)
@@ -311,23 +375,37 @@ namespace TitleEdit.PluginServices
 
         private void OnLogin()
         {
-            ResolveQuestSheet();
-            RefreshFromClient("login");
+            try
+            {
+                ResolveQuestSheet();
+                RefreshFromClient("login");
+            }
+            catch (Exception ex)
+            {
+                Services.Log.Warning(ex, "[MsqTracker] OnLogin failed");
+            }
         }
 
         private void OnLogout(int _type, int _code)
         {
-            // Final snapshot for this session (progress made while logged in).
-            // requireLoggedIn: false — ClientState.IsLoggedIn may already be false
-            // by the time this event runs, but QuestManager is usually still readable.
-            RefreshFromClient("logout", requireLoggedIn: false);
-
-            if (Services.ConfigurationService.ApplyMsqTitleImmediately &&
-                Services.ConfigurationService.TitleDisplayTypeOption.Type == TitleDisplayType.MsqProgress)
+            try
             {
-                // TitleEdit loads at the lobby. Reloading here makes the matching
-                // title/movie appear as soon as you hit the title screen — no ffxiv_dx11 relaunch.
-                ApplyToLobbyIfOnTitle();
+                // Final snapshot for this session (progress made while logged in).
+                // requireLoggedIn: false — ClientState.IsLoggedIn may already be false
+                // by the time this event runs, but QuestManager is usually still readable.
+                RefreshFromClient("logout", requireLoggedIn: false);
+
+                if (Services.ConfigurationService.ApplyMsqTitleImmediately &&
+                    Services.ConfigurationService.TitleDisplayTypeOption.Type == TitleDisplayType.MsqProgress)
+                {
+                    // TitleEdit loads at the lobby. Reloading here makes the matching
+                    // title/movie appear as soon as you hit the title screen — no ffxiv_dx11 relaunch.
+                    ApplyToLobbyIfOnTitle();
+                }
+            }
+            catch (Exception ex)
+            {
+                Services.Log.Warning(ex, "[MsqTracker] OnLogout failed");
             }
         }
     }
