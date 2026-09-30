@@ -6,6 +6,7 @@ using TitleEdit.Data.Lobby;
 using TitleEdit.Data.Msq;
 using TitleEdit.Data.Persistence;
 using TitleEdit.Utility;
+using Dalamud.Game.Config;
 
 namespace TitleEdit.PluginServices
 {
@@ -21,6 +22,13 @@ namespace TitleEdit.PluginServices
     {
         private readonly Dictionary<string, uint> gateQuestIds = new(StringComparer.OrdinalIgnoreCase);
         private bool sheetResolved;
+
+        // Debounce rapid Login/Logout sequences that happen during world / datacenter travel.
+        // Without this the expensive DetectExpansion path (and cfg.Save) can run many times
+        // in a short window while native quest / player state is half-destroyed, producing
+        // the "errors every second" spam.
+        private DateTime lastRefreshUtc = DateTime.MinValue;
+        private static readonly TimeSpan MinRefreshInterval = TimeSpan.FromSeconds(2.5);
 
         public TitleScreenExpansion CurrentExpansion { get; private set; } = TitleScreenExpansion.ARealmReborn;
         public string CurrentGateQuest { get; private set; } = "A Realm Reborn";
@@ -79,6 +87,15 @@ namespace TitleEdit.PluginServices
                     return;
                 }
 
+                // Debounce: world/DC travel produces rapid successive Login + Logout events
+                // while native structures are unstable. Skip if we just ran a short time ago
+                // (except for the very first init call).
+                var now = DateTime.UtcNow;
+                if (reason != "init-logged-in" && (now - lastRefreshUtc) < MinRefreshInterval)
+                {
+                    return;
+                }
+
                 // Prefer live PlayerState; fall back to whatever we already knew this session
                 // so a logout that races IsLoggedIn still has a usable Content ID / name.
                 ulong contentId = 0;
@@ -125,6 +142,7 @@ namespace TitleEdit.PluginServices
                     // but skip the expensive / fragile quest scan.
                     CurrentExpansion = ClampToAvailable(cached);
                     Persist(reason, changed: false);
+                    lastRefreshUtc = now;
                     return;
                 }
 
@@ -133,6 +151,7 @@ namespace TitleEdit.PluginServices
                 CurrentExpansion = expansion;
                 CurrentGateQuest = gate;
                 Persist(reason, changed);
+                lastRefreshUtc = now;
             }
             catch (Exception ex)
             {
@@ -156,7 +175,7 @@ namespace TitleEdit.PluginServices
                 cfg.LastMsqObservedAt = DateTime.UtcNow;
                 cfg.Save();
                 Services.Log.Info($"[MsqTracker] {reason}: {CurrentCharacterName} ({CurrentContentId:X}) → {CurrentExpansion} via {CurrentGateQuest}");
-
+                ApplyGameTitleScreenSetting(CurrentExpansion);
                 if (changed && cfg.ApplyMsqTitleImmediately && cfg.TitleDisplayTypeOption.Type == TitleDisplayType.MsqProgress)
                 {
                     ApplyToLobbyIfOnTitle();
@@ -182,7 +201,29 @@ namespace TitleEdit.PluginServices
                 Services.Log.Warning(ex, "[MsqTracker] Could not reload title screen immediately");
             }
         }
+        private void ApplyGameTitleScreenSetting(TitleScreenExpansion expansion)
+        {
+            if (!Services.ConfigurationService.ReflectMsqOntoGameSettings)
+                return;
 
+            // Confirmed: 0 ARR, 1 HW, 2 SB, 3 ShB. Inferred: 4 EW, 5 DT
+            // (matches TitleScreenExpansion enum values).
+            var value = (uint)ClampToAvailable(expansion);
+
+            try
+            {
+                if (Services.GameConfig.TryGet(SystemConfigOption.TitleScreenType, out uint current)
+                    && current == value)
+                    return;
+
+                Services.GameConfig.Set(SystemConfigOption.TitleScreenType, value);
+                Services.Log.Info($"[MsqTracker] Set TitleScreenType → {value} ({expansion})");
+            }
+            catch (Exception ex)
+            {
+                Services.Log.Warning(ex, "[MsqTracker] Failed to set TitleScreenType");
+            }
+        }
         private (TitleScreenExpansion Expansion, string Gate) DetectExpansion()
         {
             try
