@@ -11,6 +11,8 @@ namespace TitleEdit.Utility
 {
     public class Services
     {
+        [PluginService]                                                 
+        public static IGameConfig GameConfig { get; set; } = null!;     
         [PluginService]
         public static IClientState ClientState { get; set; } = null!;
         [PluginService]
